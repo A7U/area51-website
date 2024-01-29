@@ -1,71 +1,65 @@
-import { PrismaAdapter } from "@next-auth/prisma-adapter";
-import {
-  getServerSession,
-  type DefaultSession,
-  type NextAuthOptions,
-} from "next-auth";
-import DiscordProvider from "next-auth/providers/discord";
+import { Lucia } from "lucia";
+import { db } from "./db";
+import { PrismaAdapter } from "@lucia-auth/adapter-prisma";
+import { PrismaClient } from "@prisma/client";
+import { cookies } from "next/headers";
+import { cache } from "react";
 
-import { env } from "@/env";
-import { db } from "@/server/db";
+import type { Session, User } from "lucia";
 
-/**
- * Module augmentation for `next-auth` types. Allows us to add custom properties to the `session`
- * object and keep type safety.
- *
- * @see https://next-auth.js.org/getting-started/typescript#module-augmentation
- */
-declare module "next-auth" {
-  interface Session extends DefaultSession {
-    user: {
-      id: string;
-      // ...other properties
-      // role: UserRole;
-    } & DefaultSession["user"];
-  }
+const client = new PrismaClient();
 
-  // interface User {
-  //   // ...other properties
-  //   // role: UserRole;
-  // }
+const adapter = new PrismaAdapter(client.session, client.user);
+
+export const lucia = new Lucia(adapter, {
+	sessionCookie: {
+		expires: false,
+		attributes: {
+			secure: process.env.NODE_ENV === "production"
+		}
+	},
+	getUserAttributes: (attributes) => {
+		return {
+			// attributes has the type of DatabaseUserAttributes
+			username: attributes.username
+		};
+	}
+});
+
+
+export const validateRequest = cache(
+	async (): Promise<{ user: User; session: Session } | { user: null; session: null }> => {
+		const sessionId = cookies().get(lucia.sessionCookieName)?.value ?? null;
+		if (!sessionId) {
+			return {
+				user: null,
+				session: null
+			};
+		}
+
+		const result = await lucia.validateSession(sessionId);
+		// next.js throws when you attempt to set cookie when rendering page
+		try {
+			if (result.session && result.session.fresh) {
+				const sessionCookie = lucia.createSessionCookie(result.session.id);
+				cookies().set(sessionCookie.name, sessionCookie.value, sessionCookie.attributes);
+			}
+			if (!result.session) {
+				const sessionCookie = lucia.createBlankSessionCookie();
+				cookies().set(sessionCookie.name, sessionCookie.value, sessionCookie.attributes);
+			}
+		} catch {}
+		return result;
+	}
+);
+
+declare module "lucia" {
+	interface Register {
+		Lucia: typeof lucia;
+		DatabaseUserAttributes: DatabaseUserAttributes;
+	}
 }
 
-/**
- * Options for NextAuth.js used to configure adapters, providers, callbacks, etc.
- *
- * @see https://next-auth.js.org/configuration/options
- */
-export const authOptions: NextAuthOptions = {
-  callbacks: {
-    session: ({ session, user }) => ({
-      ...session,
-      user: {
-        ...session.user,
-        id: user.id,
-      },
-    }),
-  },
-  adapter: PrismaAdapter(db),
-  providers: [
-    DiscordProvider({
-      clientId: env.DISCORD_CLIENT_ID,
-      clientSecret: env.DISCORD_CLIENT_SECRET,
-    }),
-    /**
-     * ...add more providers here.
-     *
-     * Most other providers require a bit more work than the Discord provider. For example, the
-     * GitHub provider requires you to add the `refresh_token_expires_in` field to the Account
-     * model. Refer to the NextAuth.js docs for the provider you want to use. Example:
-     *
-     * @see https://next-auth.js.org/providers/github
-     */
-  ],
-};
-
-/**
- * Wrapper for `getServerSession` so that you don't need to import the `authOptions` in every file.
- *
- * @see https://next-auth.js.org/configuration/nextjs
- */
-export const getServerAuthSession = () => getServerSession(authOptions);
+interface DatabaseUserAttributes {
+	username: string;
+}
