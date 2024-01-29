@@ -9,7 +9,10 @@ const config = {
     webpack: (config) => {
 		config.externals.push("@node-rs/argon2", "@node-rs/bcrypt");
 		return config;
-	}
+	},
+	reactStrictMode: true,
+	swcMinify: true,
+	output: "standalone",
 };
 
 export default config;
